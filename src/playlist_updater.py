@@ -149,7 +149,7 @@ class PlaylistUpdater:
 
 
     def get_song(self, song, index):
-        search_query = "{} {} {}".format(song.title, song.artist, song.album).strip().replace('\xa0', ' ')
+        search_query = "{} {} {}".format(song.title, song.artist, song.album).strip()
         manual_fixes = Util.get_manual_fixes()
 
         Util.log("#{}: Searching for '{}'".format(index + 1, search_query), 2)
@@ -172,10 +172,30 @@ class PlaylistUpdater:
         if song_result is None:
             Util.log("No results above threshold found, searching through album instead.", 3)
             song_result = self.get_match_from_album(song)
-
+		
+		# Searching for the first result without unwanted keywords at last
         if song_result is None:
-            Util.log("Track not found in album. Assuming first result is correct.", 4)
-            song_result = Song.MakeSong(results[0])
+            Util.log("Track not found in album. Searching for the first result without unwanted keywords...", 4)
+            
+            EXCLUDE_KEYWORDS = ["(live", "live ver", "instrumental", "karaoke", "inst.", "(Acoustic", "Acoustic)"]
+            
+            found_clean_result = None
+            for res in results:
+                potential_song = Song.MakeSong(res)
+                title_lower = potential_song.title.lower()
+                
+                # Check with keywords
+                if not any(word in title_lower for word in EXCLUDE_KEYWORDS):
+                    found_clean_result = potential_song
+                    Util.log("Found a clean result: '{}' by '{}' from '{}'".format(found_clean_result.title, found_clean_result.artist, found_clean_result.album), 5)
+                    break
+            
+            # If all songs include unwanted keywords, just use the first result
+            if found_clean_result:
+                song_result = found_clean_result
+            else:
+                Util.log("All results contained excluded keywords. Falling back to the very first result.", 4)
+                song_result = Song.MakeSong(results[0])
 
         return song_result
 
@@ -208,10 +228,25 @@ class PlaylistUpdater:
             for i, track in enumerate(tracks):
                 this_album_song = Song.MakeSong(track)
                 Util.log("Checking track #{}: '{}'".format(i + 1, this_album_song.title), 5)
+                
                 if Util.similar(song.title, this_album_song.title):
-                    Util.log("Match found.", 6)
-                    return this_album_song
-
+                    if track.get('videoType') == 'MUSIC_VIDEO_TYPE_ATV':
+                        Util.log("Match found.", 6)
+                        return this_album_song
+                    else:                        
+                        # If not ATV, re-search with 'songs' filter
+                        Util.log("Match found, but it's an Official Music Video. Re-searching for an Art Track Video...", 5)
+                        refined_query = "{} {} {}".format(this_album_song.title, this_album_song.artist, this_album_song.album)
+                        refined_results = self.ytmusic.search(refined_query, filter="songs")
+                        
+                        # Check if there's a match via re-search.
+                        official_match = self.get_match_from_top_results(this_album_song, refined_results)
+                        if official_match:
+                            Util.log("Art Track Video found via re-search: '{}' by '{}' from '{}'".format(this_album_song.title, this_album_song.artist, this_album_song.album), 4)
+                            return official_match
+                        
+                        Util.log("Art Track Video not found. Falling back to first result.", 4)
+                        return None
             return None
         except Exception as e:
             Util.log("Encountered exception while attempting to get match from album. {}".format(str(e)))
@@ -247,5 +282,3 @@ class PlaylistUpdater:
         except Exception as e:
             Util.log("Error while finding visually similar album image. {}".format(str(e)), 5)
             return None
-
-
